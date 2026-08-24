@@ -1,0 +1,85 @@
+import os
+import sys
+import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# --- Resolve paths (works in both dev and PyInstaller-frozen builds) ---
+if getattr(sys, "frozen", False):
+    # PyInstaller exe is typically in dist/ subdirectory
+    _EXE_DIR = Path(sys.executable).resolve().parent
+    _PROJECT_ROOT = _EXE_DIR.parent  # go up from dist/ to project root
+else:
+    _PROJECT_ROOT = Path(__file__).resolve().parent
+
+# --- Cascade loading: shared (low priority) → project (high priority) ---
+_workspace = _PROJECT_ROOT.parent
+for _f in [".env.azure", ".env.vendera"]:
+    _p = _workspace / _f
+    if _p.exists():
+        load_dotenv(_p)
+
+_project_env = _PROJECT_ROOT / ".env"
+if _project_env.exists():
+    load_dotenv(_project_env, override=True)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
+
+
+def _require(key: str) -> str:
+    val = os.environ.get(key, "")
+    if not val:
+        raise RuntimeError(f"Missing required env var: {key}")
+    return val
+
+
+# --- Device_Info config (Octopus-Token login) ---
+DEVICE_INFO_LOGIN_URL = os.environ.get("DEVICE_INFO_LOGIN_URL", "https://iot-usa.vendera.ai/iot/user/login")
+DEVICE_INFO_USER = _require("DEVICE_INFO_USER")
+DEVICE_INFO_PWD = _require("DEVICE_INFO_PWD")
+
+# --- SmartCabinet / Router Code config (Bearer Token login) ---
+# Loaded from ../.env.vendera (shared); override in project .env if needed
+ROUTER_CODE_LOGIN_URL = os.environ.get(
+    "SMARTCABINET_LOGIN_URL",
+    "https://app-boss-usa.vendera.ai/prod-api/auth/login",
+)
+ROUTER_CODE_CLIENT_ID = _require("SMARTCABINET_CLIENT_ID")
+ROUTER_CODE_TENANT_ID = _require("SMARTCABINET_TENANT_ID")
+ROUTER_CODE_PUB_KEY = _require("SMARTCABINET_PUB_KEY")
+ROUTER_CODE_USER = _require("SMARTCABINET_USER")
+ROUTER_CODE_PWD = _require("SMARTCABINET_PWD")
+ROUTER_CODE_QUERY_URL = os.environ.get(
+    "SMARTCABINET_QUERY_URL",
+    "https://app-boss-usa.vendera.ai/prod-api/cabinet/routerInfo/list",
+)
+
+# --- POS config (dash.vendera.ai) ---
+POS_USER = _require("POS_USER")
+POS_PWD = _require("POS_PWD")
+POS_LOGIN_URL = os.environ.get("POS_LOGIN_URL", "https://dash.vendera.ai/api/auth/login")
+POS_QUERY_URL = os.environ.get("POS_QUERY_URL", "https://dash.vendera.ai/api/pos")
+
+# --- InHand Device Manager config ---
+DM_BASE_URL = os.environ.get("DM_BASE_URL", "https://iot.inhandnetworks.com")
+DM_CLIENT_ID = _require("DM_CLIENT_ID")
+DM_CLIENT_SECRET = _require("DM_CLIENT_SECRET")
+DM_USERNAME = _require("DM_USERNAME")
+DM_PASSWORD = _require("DM_PASSWORD")
+
+# --- Hologram config ---
+HOLOGRAM_API_KEY = _require("HOLOGRAM_API_KEY")
+HOLOGRAM_BASE_URL = os.environ.get("HOLOGRAM_BASE_URL", "https://dashboard.hologram.io/api/1")
+HOLOGRAM_ORG_ID = _require("HOLOGRAM_ORG_ID")
+
+# --- Hongdian router northbound API config ---
+HONGDIAN_BASE_URL = os.environ.get("HONGDIAN_BASE_URL", "https://sandora.hongdian.com")
+HONGDIAN_TOKEN = _require("HONGDIAN_TOKEN")
+
+# --- JC 4G Module config (vendera.ai IoT network logs) ---
+# Reuses DEVICE_INFO_USER / DEVICE_INFO_PWD for Octopus-Token auth.
+JC_MODULE_LOG_URL = os.environ.get(
+    "JC_MODULE_LOG_URL",
+    "https://iot-usa.vendera.ai/iot/machine/logs/network/status",
+)
