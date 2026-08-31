@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+*.pyo
+.git
+.env
+.env.deploy
+.env.deploy.template
+dist
+build
+*.spec
+.vscode
+.idea
+*.md
+!backend/requirements.txt

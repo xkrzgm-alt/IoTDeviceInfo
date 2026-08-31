@@ -1,0 +1,9 @@
+services:
+  iot-backend:
+    build: .
+    container_name: iot-device-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.deploy
+    restart: unless-stopped
