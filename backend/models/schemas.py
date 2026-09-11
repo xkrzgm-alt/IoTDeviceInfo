@@ -42,6 +42,10 @@ class SimInfoOut(BaseModel):
     monthly_data_bytes: int
     monthly_data_gb: float
     last_active_time: str
+    billing_period_data_bytes: int
+    billing_period_data_gb: float
+    billing_period_start: str
+    billing_period_end: str
     session_start_time: str
     session_end_time: str
     session_active: str
