@@ -18,6 +18,8 @@ CN_TO_EN = {
     "断开": "Disconnected",
     "未知": "Unknown",
     "从未连接": "Never Connected",
+    "已投放": "Deployed",
+    "未投放": "Not Deployed",
     # Run / operating status
     "运行中": "Running",
     "已停止": "Stopped",
@@ -48,6 +50,45 @@ def translate_status(value: Any) -> str:
     if isinstance(value, str) and value in CN_TO_EN:
         return CN_TO_EN[value]
     return str(value) if value is not None else "-"
+
+
+def _channel_value(status_map: Any, channel: str) -> Any:
+    """Read a channel value from the several naming styles used by the portal."""
+    if not isinstance(status_map, dict):
+        return None
+    aliases = {
+        "Left": ("Left", "left", "L", "R1", "r1", 1, "1"),
+        "Right": ("Right", "right", "R", "R2", "r2", 2, "2"),
+    }
+    for key in aliases[channel]:
+        if key in status_map:
+            return status_map[key]
+    return None
+
+
+def _channel_report(info: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    """Return only channels present in the run payload, without inventing faults."""
+    result: Dict[str, Dict[str, str]] = {}
+    source_names = {
+        "Power": "powerStatus",
+        "Door": "doorStatus",
+        "Lock": "lockStatus",
+        "Camera": "cameraStatus",
+    }
+    for channel in ("Left", "Right"):
+        values: Dict[str, str] = {}
+        for label, source in source_names.items():
+            raw_map = info.get(source)
+            # powerStatusName is normally a scalar; powerStatus is the optional
+            # per-channel form used by dual cabinets.
+            value = _channel_value(raw_map, channel)
+            if value is not None:
+                values[f"{label} Status"] = translate_status(
+                    "Normal" if value == 1 else "Abnormal" if value == 0 else value
+                )
+        if values:
+            result[channel] = values
+    return result
 
 
 class DeviceInfoFetcher:
@@ -101,6 +142,7 @@ class DeviceInfoFetcher:
                 device_data = data["data"]["list"][0]
                 internal_id = device_data.get("id")
                 device_base_info = {
+                    "Device Code": device_data.get("code", device_code),
                     "Device Type": translate_status(device_data.get("cabinetTypeName", "-")),
                     "Device Status": translate_status(device_data.get("statusName", "-")),
                     "Board Serial No": device_data.get("serialNo", "-"),
@@ -124,13 +166,6 @@ class DeviceInfoFetcher:
         if internal_id:
             detail_url = f"https://iot-usa.vendera.ai/iot/machine/run/{internal_id}"
 
-            def parse_status(val):
-                if val == 1:
-                    return "Normal"
-                if val == 0:
-                    return "Abnormal/Disconnected"
-                return str(val) if val is not None else "-"
-
             try:
                 detail_response = requests.get(detail_url, headers=headers, timeout=10)
                 detail_response.raise_for_status()
@@ -143,10 +178,7 @@ class DeviceInfoFetcher:
                         "Power Status": translate_status(info.get("powerStatusName", "-")),
                         "Memory Status": translate_status(info.get("memoryStatusName", "-")),
                         "Device Temperature": info.get("deviceTemperature", "-"),
-                        "Lock Signal (R1)": parse_status(info.get("lockStatus", {}).get("R1")),
-                        "Door Signal (R1)": parse_status(info.get("doorStatus", {}).get("R1")),
-                        "Camera (R1)": parse_status(info.get("cameraStatus", {}).get("R1")),
-                        "Camera (R2)": parse_status(info.get("cameraStatus", {}).get("R2")),
+                        "Channels": _channel_report(info),
                     }
             except Exception as e:
                 logging.error(f"Failed to retrieve device operating info: {str(e)}")

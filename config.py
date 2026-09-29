@@ -55,11 +55,16 @@ ROUTER_CODE_QUERY_URL = os.environ.get(
     "https://app-boss-usa.vendera.ai/prod-api/cabinet/routerInfo/list",
 )
 
-# --- POS config (dash.vendera.ai) ---
-POS_USER = _require("POS_USER")
-POS_PWD = _require("POS_PWD")
-POS_LOGIN_URL = os.environ.get("POS_LOGIN_URL", "https://dash.vendera.ai/api/auth/login")
-POS_QUERY_URL = os.environ.get("POS_QUERY_URL", "https://dash.vendera.ai/api/pos")
+# --- Dash.vendera.ai config ---
+DASH_USER = _require("DASH_USER")
+DASH_PWD = _require("DASH_PWD")
+DASH_API_BASE_URL = os.environ.get("DASH_API_BASE_URL", "https://dash.vendera.ai/api")
+POS_LOGIN_URL = os.environ.get("POS_LOGIN_URL", f"{DASH_API_BASE_URL}/auth/login")
+POS_QUERY_URL = os.environ.get("POS_QUERY_URL", f"{DASH_API_BASE_URL}/pos")
+DASH_ROUTER_LOGIN_URL = os.environ.get("DASH_ROUTER_LOGIN_URL", f"{DASH_API_BASE_URL}/auth/login")
+DASH_ROUTER_QUERY_URL = os.environ.get(
+    "DASH_ROUTER_QUERY_URL", "https://dash.vendera.ai/api/routers"
+)
 
 # --- InHand Device Manager config ---
 DM_BASE_URL = os.environ.get("DM_BASE_URL", "https://iot.inhandnetworks.com")
@@ -72,6 +77,7 @@ DM_PASSWORD = _require("DM_PASSWORD")
 HOLOGRAM_API_KEY = _require("HOLOGRAM_API_KEY")
 HOLOGRAM_BASE_URL = os.environ.get("HOLOGRAM_BASE_URL", "https://dashboard.hologram.io/api/1")
 HOLOGRAM_ORG_ID = _require("HOLOGRAM_ORG_ID")
+HOLOGRAM_USAGE_CACHE_TTL = int(os.environ.get("HOLOGRAM_USAGE_CACHE_TTL", "300"))
 
 # --- Hongdian router northbound API config ---
 HONGDIAN_BASE_URL = os.environ.get("HONGDIAN_BASE_URL", "https://sandora.hongdian.com")

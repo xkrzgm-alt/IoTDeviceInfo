@@ -1,6 +1,8 @@
 import logging
 import threading
+import time
 import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor
 from tkinter import scrolledtext, messagebox
 
 from device_info import DeviceInfoFetcher, translate_status
@@ -24,11 +26,18 @@ def _fetch_device_info(target_device_id: str) -> dict:
     return {}
 
 
-def _fetch_router_sn(target: str, reverse: bool = False) -> str | None:
+def _fetch_router_record(target: str, reverse: bool = False) -> dict | None:
     fetcher = RouterCodeFetcher()
     if reverse:
-        return fetcher.get_machine_id_by_router_sn(target)
-    return fetcher.get_router_code(target)
+        return fetcher.get_router_record_by_code(target)
+    return fetcher.get_router_record(target)
+
+
+def _fetch_router_sn(target: str, reverse: bool = False) -> str | None:
+    record = _fetch_router_record(target, reverse=reverse)
+    if not record:
+        return None
+    return record.get("machineId") if reverse else record.get("code")
 
 
 def _fetch_router_and_signal(router_sn: str, device_id: str = "") -> tuple[dict, dict]:
@@ -78,6 +87,11 @@ def _fetch_sim_info(router_info: dict) -> dict:
     ) or {}
 
 
+def _fetch_sim_info_by_iccid(iccid: str) -> dict:
+    hologram = HologramApiClient()
+    return hologram.get_sim_info_by_iccid(iccid) or {}
+
+
 def _fetch_pos_info(target_device_id: str) -> dict:
     client = POSClient()
     return client.get_pos_info(target_device_id)
@@ -87,46 +101,124 @@ def _fetch_pos_info(target_device_id: str) -> dict:
 # Data collection — returns structured results for GUI
 # ---------------------------------------------------------------------------
 
-def collect_device_data(device_id: str, router_sn: str) -> dict:
-    """Execute queries and return structured data. At least one of device_id or
-    router_sn must be provided. They work independently — device_id queries the
-    vendera.ai platform and optionally resolves router SN; router_sn queries the
-    InHand/Hongdian router platform and Hologram SIM info directly."""
-    if not device_id and not router_sn:
-        return {"error": "Please enter a device ID or router SN!"}
+def _timed_call(stage: str, func, *args, **kwargs):
+    """Run a network stage and log its duration without exposing arguments."""
+    started = time.perf_counter()
+    try:
+        return func(*args, **kwargs)
+    finally:
+        logging.info("Query stage %s completed in %.3fs", stage, time.perf_counter() - started)
+
+
+_QUERY_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="device-query")
+
+
+def collect_device_data(device_id: str, router_sn: str, iccid: str = None) -> dict:
+    """Execute queries and return structured data. At least one of device_id,
+    router_sn, or iccid must be provided. device_id queries the vendera.ai platform
+    and optionally resolves router SN; router_sn queries the InHand/Hongdian router
+    platform and Hologram SIM info directly; iccid (alone) queries Hologram SIM info
+    by ICCID and returns the linked device id/name.
+
+    Independent external calls are deliberately bounded and run concurrently. Each
+    call still has its own failure handling so one optional integration cannot block
+    the complete result.
+    """
+    if not device_id and not router_sn and not iccid:
+        return {"error": "Please enter a device ID, router SN, or SIM ICCID!"}
 
     device_info = {}
+    pos_info = {}
+    router_info, signal_info = {}, {}
+    router_metadata = {}
+    sim_info = {}
+
+    if iccid and not device_id and not router_sn:
+        # ICCID-only lookup: SIM info + linked device id/name (no device/router/POS)
+        sim_info = _timed_call("hologram-sim-by-iccid", _fetch_sim_info_by_iccid, iccid)
+        return {
+            "device_id": "",
+            "router_sn": "",
+            "iccid": iccid,
+            "device_info": device_info,
+            "router_info": router_info,
+            "signal_info": signal_info,
+            "sim_info": sim_info,
+            "pos_info": pos_info,
+        }
+
     if device_id:
-        device_info = _fetch_device_info(device_id)
+        # Device details and the forward association lookup do not depend on one
+        # another. Running them together removes one full WAN round trip.
+        futures = {
+            "device": _QUERY_EXECUTOR.submit(_timed_call, "device-info", _fetch_device_info, device_id),
+        }
         if not router_sn:
-            router_sn = _fetch_router_sn(device_id) or ""
+            futures["router-record"] = _QUERY_EXECUTOR.submit(
+                _timed_call, "router-association", _fetch_router_record, device_id
+            )
+        device_info = futures["device"].result()
+        if not router_sn:
+            router_record = futures["router-record"].result()
+            if router_record:
+                router_sn = router_record.get("code") or ""
+                router_metadata = router_record
     elif router_sn:
         # Reverse lookup: Router SN → Device ID → device info
-        device_id = _fetch_router_sn(router_sn, reverse=True) or ""
+        router_record = _timed_call("router-association", _fetch_router_record, router_sn, True)
+        if router_record:
+            device_id = router_record.get("machineId") or ""
+            router_metadata = router_record
+        else:
+            device_id = ""
         if device_id:
-            device_info = _fetch_device_info(device_id)
+            device_info = _timed_call("device-info", _fetch_device_info, device_id)
 
-    pos_info = {}
-    if device_id:
-        try:
-            pos_info = _fetch_pos_info(device_id)
-        except Exception as e:
-            logging.error(f"Failed to retrieve POS info: {str(e)}")
+    if router_sn and not router_metadata:
+        router_metadata = _timed_call(
+            "router-association", _fetch_router_record, router_sn, True
+        ) or {}
 
-    router_info, signal_info = {}, {}
-    sim_info = {}
-    if router_sn:
-        try:
-            router_info, signal_info = _fetch_router_and_signal(router_sn, device_id)
-            if signal_info:
-                router_info["4G Signal Info"] = signal_info
-            sim_info = _fetch_sim_info(router_info)
-        except Exception as e:
-            logging.error(f"Failed to retrieve router/SIM/signal info: {str(e)}")
+    # POS and router data are independent once the IDs are known.
+    if device_id or router_sn:
+        futures = {}
+        if device_id:
+            futures["pos"] = _QUERY_EXECUTOR.submit(
+                _timed_call, "pos", _fetch_pos_info, device_id
+            )
+        if router_sn:
+            futures["router"] = _QUERY_EXECUTOR.submit(
+                _timed_call, "router-signal", _fetch_router_and_signal, router_sn, device_id
+            )
+        if "pos" in futures:
+            try:
+                pos_info = futures["pos"].result()
+            except Exception as e:
+                logging.error(f"Failed to retrieve POS info: {e}")
+        if "router" in futures:
+            try:
+                router_info, signal_info = futures["router"].result()
+                if router_metadata:
+                    router_info.update({
+                        "Router SN": router_metadata.get("code", router_sn),
+                        "Router Metadata": router_metadata,
+                    })
+                    if router_metadata.get("imei") and not router_info.get("IMEI"):
+                        router_info["IMEI"] = router_metadata["imei"]
+                    if not router_info.get("Device Model"):
+                        model = router_metadata.get("model") or router_metadata.get("brand")
+                        if model:
+                            router_info["Device Model"] = model
+                if signal_info:
+                    router_info["4G Signal Info"] = signal_info
+                sim_info = _timed_call("hologram-sim", _fetch_sim_info, router_info)
+            except Exception as e:
+                logging.error(f"Failed to retrieve router/SIM/signal info: {str(e)}")
 
     return {
         "device_id": device_id,
         "router_sn": router_sn,
+        "iccid": iccid,
         "device_info": device_info,
         "router_info": router_info,
         "signal_info": signal_info,
@@ -163,8 +255,8 @@ def format_results(data: dict) -> str:
     sim_info = data["sim_info"]
     pos_info = data.get("pos_info", {})
 
-    label = device_id or router_sn
-    mode = " (Device ID)" if device_id else " (Router SN)"
+    label = device_id or router_sn or data.get("iccid")
+    mode = " (Device ID)" if device_id else " (Router SN)" if router_sn else " (SIM ICCID)"
 
     lines = []
     lines.append("=" * 80)
@@ -178,9 +270,15 @@ def format_results(data: dict) -> str:
 
         lines.append("\n\U0001f4ca [Device Operating Info]")
         for k, v in device_info.get("Operating Info", {}).items():
-            lines.append(f"  {k}: {v}")
+            if k == "Channels" and isinstance(v, dict):
+                for channel, channel_values in v.items():
+                    lines.append(f"  [{channel}]")
+                    for channel_key, channel_value in channel_values.items():
+                        lines.append(f"    {channel_key}: {channel_value}")
+            else:
+                lines.append(f"  {k}: {v}")
     else:
-        lines.append("\n\U0001f310 Router SN direct query mode (device info not fetched)")
+        lines.append("\n\U0001f310 Device info not fetched (direct query)")
 
     lines.append("\n\U0001f4b3 [POS Reader Info]")
     if pos_info:
@@ -267,6 +365,16 @@ class DeviceQueryApp(tk.Tk):
         self.router_entry.pack(side=tk.LEFT, padx=5)
         self.router_entry.bind("<Return>", lambda _: self._on_query())
 
+        # Row 3: SIM ICCID
+        row3 = tk.Frame(input_frame)
+        row3.pack(fill=tk.X)
+
+        tk.Label(row3, text="SIM ICCID:", font=("Microsoft YaHei", 11), width=10, anchor="e").pack(side=tk.LEFT)
+
+        self.iccid_entry = tk.Entry(row3, font=("Consolas", 12), width=30)
+        self.iccid_entry.pack(side=tk.LEFT, padx=5)
+        self.iccid_entry.bind("<Return>", lambda _: self._on_query())
+
         self.query_btn = tk.Button(
             input_frame, text="Query", font=("Microsoft YaHei", 10),
             command=self._on_query, width=8, height=1
@@ -299,11 +407,12 @@ class DeviceQueryApp(tk.Tk):
     def _on_query(self):
         device_id = self.device_entry.get().strip()
         router_sn = self.router_entry.get().strip()
-        if not device_id and not router_sn:
-            messagebox.showwarning("Input Error", "Please enter a device ID or router SN!")
+        iccid = self.iccid_entry.get().strip()
+        if not device_id and not router_sn and not iccid:
+            messagebox.showwarning("Input Error", "Please enter a device ID, router SN, or SIM ICCID!")
             return
 
-        label = device_id or router_sn
+        label = device_id or router_sn or iccid
         self.query_btn.config(state=tk.DISABLED)
         self.status_var.set("Querying...")
         sep = "─" * 60
@@ -312,11 +421,11 @@ class DeviceQueryApp(tk.Tk):
         self.output.insert(tk.END, f"{sep}\n")
         self.output.see(tk.END)
 
-        threading.Thread(target=self._run_query, args=(device_id, router_sn), daemon=True).start()
+        threading.Thread(target=self._run_query, args=(device_id, router_sn, iccid), daemon=True).start()
 
-    def _run_query(self, device_id: str, router_sn: str):
+    def _run_query(self, device_id: str, router_sn: str, iccid: str):
         try:
-            data = collect_device_data(device_id, router_sn)
+            data = collect_device_data(device_id, router_sn, iccid)
             result_text = format_results(data)
         except Exception as e:
             result_text = f"\n[Exception] {str(e)}\n"

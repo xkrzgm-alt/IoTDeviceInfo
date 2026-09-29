@@ -3,15 +3,15 @@ from typing import Optional
 
 import requests
 
-from config import POS_USER, POS_PWD, POS_LOGIN_URL, POS_QUERY_URL
+from config import DASH_USER, DASH_PWD, POS_LOGIN_URL, POS_QUERY_URL
 
 
 class POSClient:
     """Fetch POS reader info from dash.vendera.ai for a given machine/device ID."""
 
     def __init__(self):
-        self.username = POS_USER
-        self.password = POS_PWD
+        self.username = DASH_USER
+        self.password = DASH_PWD
         self.token: Optional[str] = None
 
     def get_auth_token(self) -> Optional[str]:

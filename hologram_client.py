@@ -1,15 +1,33 @@
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 import requests
 
-from config import HOLOGRAM_API_KEY, HOLOGRAM_BASE_URL, HOLOGRAM_ORG_ID
+from config import (
+    HOLOGRAM_API_KEY,
+    HOLOGRAM_BASE_URL,
+    HOLOGRAM_ORG_ID,
+    HOLOGRAM_USAGE_CACHE_TTL,
+)
 from device_info import translate_status
 
 
+_USAGE_CACHE: dict[tuple[int, str], tuple[float, int]] = {}
+_USAGE_CACHE_LOCK = threading.Lock()
+_HOLOGRAM_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hologram")
+
+
 class HologramApiClient:
-    """Hologram API client, query SIM card info"""
+    """Hologram API client, query SIM card info.
+
+    SIM identity and device details are on the critical path. Calendar-month
+    usage is independent and is cached briefly because it can require several
+    paginated requests.
+    """
 
     def __init__(self):
         self.api_key = HOLOGRAM_API_KEY
@@ -39,6 +57,13 @@ class HologramApiClient:
     def _get_calendar_month_usage(self, link_id: int) -> int:
         """Sum session usage for the current UTC calendar month."""
         now = datetime.now(timezone.utc)
+        month_key = now.strftime("%Y-%m")
+        cache_key = (int(link_id), month_key)
+        with _USAGE_CACHE_LOCK:
+            cached = _USAGE_CACHE.get(cache_key)
+            if cached and time.monotonic() - cached[0] < HOLOGRAM_USAGE_CACHE_TTL:
+                return cached[1]
+
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         params = {
             "linkid": link_id,
@@ -68,7 +93,23 @@ class HologramApiClient:
             last_cursor = cursor
             params["startafter"] = cursor
 
+        with _USAGE_CACHE_LOCK:
+            _USAGE_CACHE[cache_key] = (time.monotonic(), total_bytes)
+            # Keep the process-local cache bounded even for long-running services.
+            if len(_USAGE_CACHE) > 512:
+                oldest = min(_USAGE_CACHE, key=lambda key: _USAGE_CACHE[key][0])
+                _USAGE_CACHE.pop(oldest, None)
         return total_bytes
+
+    def _get_device_data(self, device_id: int) -> dict:
+        response = requests.get(
+            f"{self.base_url}/devices/{device_id}",
+            auth=("apikey", self.api_key),
+            timeout=10,
+        )
+        if response.status_code != 200:
+            return {}
+        return response.json().get("data", {})
 
     def get_hologram_sim_info(self, iccid: str, imei: str) -> Optional[Dict[str, Any]]:
         logging.info(f"\n [Hologram] Querying SIM info (ICCID: {iccid} / IMEI: {imei})")
@@ -89,15 +130,26 @@ class HologramApiClient:
 
             sim_data = sim_list[0]
             device_id = sim_data.get("deviceid")
+            link_id_hint = sim_data.get("id")
             device_data = {}
+            # Device details and usage are independent after the SIM search.
+            # Running them together removes one WAN round trip from the critical
+            # path; both failures remain non-fatal to the SIM report.
+            device_future = None
+            usage_future = None
             if device_id:
-                resp_dev = requests.get(
-                    f"{self.base_url}/devices/{device_id}",
-                    auth=("apikey", self.api_key),
-                    timeout=10,
+                device_future = _HOLOGRAM_EXECUTOR.submit(
+                    self._get_device_data, device_id
                 )
-                if resp_dev.status_code == 200:
-                    device_data = resp_dev.json().get("data", {})
+            if link_id_hint:
+                usage_future = _HOLOGRAM_EXECUTOR.submit(
+                    self._get_calendar_month_usage, int(link_id_hint)
+                )
+            if device_future:
+                try:
+                    device_data = device_future.result()
+                except Exception as e:
+                    logging.warning(f"Hologram device detail query failed: {e}")
 
             device_cellular_link = {}
             if (
@@ -122,8 +174,13 @@ class HologramApiClient:
                 device_cellular_link.get("whenexpires") or sim_data.get("whenexpires", "")
             )
             calendar_month_bytes = 0
-            link_id = device_cellular_link.get("id") or sim_data.get("id")
-            if link_id:
+            link_id = device_cellular_link.get("id") or link_id_hint
+            if usage_future and link_id and int(link_id) == int(link_id_hint):
+                try:
+                    calendar_month_bytes = usage_future.result()
+                except Exception as e:
+                    logging.warning(f"Hologram calendar-month usage query failed: {e}")
+            elif link_id:
                 try:
                     calendar_month_bytes = self._get_calendar_month_usage(int(link_id))
                 except Exception as e:
@@ -150,3 +207,8 @@ class HologramApiClient:
         except Exception as e:
             logging.error(f"Hologram API request error: {str(e)}")
             return None
+
+    def get_sim_info_by_iccid(self, iccid: str) -> Optional[Dict[str, Any]]:
+        """Look up a SIM by ICCID only (empty IMEI). Returns the SIM report plus the
+        linked Hologram device id/name."""
+        return self.get_hologram_sim_info(iccid, "")

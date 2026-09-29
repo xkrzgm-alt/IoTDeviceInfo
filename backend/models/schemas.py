@@ -1,10 +1,11 @@
-from typing import Optional
-from pydantic import BaseModel
+from typing import Any, Optional
+from pydantic import BaseModel, Field
 
 
 class QueryRequest(BaseModel):
     device_id: Optional[str] = None
     router_sn: Optional[str] = None
+    iccid: Optional[str] = None
 
 
 class RouterInfoOut(BaseModel):
@@ -22,11 +23,21 @@ class RouterInfoOut(BaseModel):
     network_latency: Optional[str] = None  # JC module only
     sim_carrier: Optional[str] = None  # JC module only
     module_serial_no: Optional[str] = None  # JC module only
+    metadata: dict[str, Any] = Field(default_factory=dict)  # dash/app-boss router association metadata
+
+
+class TemperatureInfoOut(BaseModel):
+    range_hours: int
+    binding: Optional[dict[str, Any]] = None
+    policy: Optional[dict[str, Any]] = None
+    current_temperature: Optional[dict[str, Any]] = None
+    records: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SignalInfoOut(BaseModel):
     latest_signal_time: str
     rsrp: str
+    rsrq: str
     snr: str
     rssi: str
     band: str
@@ -70,5 +81,6 @@ class QueryResponse(BaseModel):
     router_sn: Optional[str] = None
     router_info: Optional[RouterInfoOut] = None
     signal_info: Optional[SignalInfoOut] = None
+    temperature_info: Optional[TemperatureInfoOut] = None
     sim_info: Optional[SimInfoOut] = None
     pos_info: Optional[PosInfoOut] = None
