@@ -1,10 +1,13 @@
 import logging
+import os
+import hmac
 import sys
 import time
+import requests
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header, Depends
 
 # Allow importing from the parent IoTdeviceInfo package
 _PARENT = Path(__file__).resolve().parent.parent
@@ -32,6 +35,27 @@ from backend.models.schemas import (
 
 router = APIRouter()
 _QUERY_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="api-query")
+
+
+def authorize_query(octopus_token: str | None = Header(default=None),
+                    x_service_token: str | None = Header(default=None)) -> None:
+    """Never trust a client-supplied API key; Mini Program supplies its user token."""
+    service_secret = os.environ.get("BACKEND_SERVICE_TOKEN", "")
+    if x_service_token and service_secret and hmac.compare_digest(x_service_token, service_secret):
+        return
+    if not octopus_token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        response = requests.post(
+            "https://iot-usa.vendera.ai/iot/machine/page",
+            json={"pageSize": 1, "currPage": 1},
+            headers={"Octopus-Token": octopus_token}, timeout=5,
+        )
+        if response.status_code == 200 and str(response.json().get("code")) == "200":
+            return
+    except (requests.RequestException, ValueError):
+        raise HTTPException(status_code=503, detail="Authentication service unavailable") from None
+    raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 def _timed_call(stage: str, func, *args, **kwargs):
@@ -228,7 +252,7 @@ def _fetch_pos(device_id: str) -> dict | None:
 # Main endpoint
 # ---------------------------------------------------------------------------
 
-@router.post("/api/query", response_model=QueryResponse)
+@router.post("/api/query", response_model=QueryResponse, dependencies=[Depends(authorize_query)])
 def handle_query(req: QueryRequest) -> QueryResponse:
     device_id = req.device_id.strip() if req.device_id else None
     router_sn = req.router_sn.strip() if req.router_sn else None

@@ -6,22 +6,21 @@ from datetime import datetime, timedelta
 # 配置参数 (InHand Device Manager)
 # ==========================================
 DM_BASE_URL = os.environ.get("DM_BASE_URL", "https://iot.inhandnetworks.com")
-DM_CLIENT_ID = os.environ.get("DM_CLIENT_ID", "000017953450251798098136")
-DM_CLIENT_SECRET = os.environ.get("DM_CLIENT_SECRET", "08E9EC6793345759456CB8BAE52615F3")
-DM_USERNAME = os.environ.get("DM_USERNAME", "xdcanada@gmail.com")
-DM_PASSWORD = os.environ.get("DM_PASSWORD", "yousa2025!")
+DM_CLIENT_ID = os.environ.get("DM_CLIENT_ID", "")
+DM_CLIENT_SECRET = os.environ.get("DM_CLIENT_SECRET", "")
+DM_USERNAME = os.environ.get("DM_USERNAME", "")
+DM_PASSWORD = os.environ.get("DM_PASSWORD", "")
 
 # ==========================================
 # 配置参数 (三三云 / 北向 API - 另一款路由器)
 # ==========================================
 SANSAN_BASE_URL = os.environ.get("SANSAN_BASE_URL", "https://sandora.hongdian.com")  # 假设的基础URL，如果报错请替换为真实的
-SANSAN_TOKEN = os.environ.get("SANSAN_TOKEN",
-                              "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiI4NjEyNWQ3MDk2YjkyNmQwIiwiZXhwIjoyMjA4OTg4ODAwLCJsYW5ndWFnZSI6IiIsIm9yaWdfaWF0IjoxNzc5Nzc4NzcwLCJ1c2VybmFtZSI6ImFsaXVAdmVuZGVyYS5haSJ9.tC5r7refZX0tQfolhwDT-jlIWHr17KBi1O5sXRWhvG8")
+SANSAN_TOKEN = os.environ.get("SANSAN_TOKEN", "")
 
 # ==========================================
 # 配置参数 (Hologram API)
 # ==========================================
-HOLOGRAM_API_KEY = os.environ.get("HOLOGRAM_API_KEY", "2E3yEFD2FYtAiiyfpa22C349qsdid0")
+HOLOGRAM_API_KEY = os.environ.get("HOLOGRAM_API_KEY", "")
 HOLOGRAM_BASE_URL = os.environ.get("HOLOGRAM_BASE_URL", "https://dashboard.hologram.io/api/1")
 HOLOGRAM_ORG_ID = os.environ.get("HOLOGRAM_ORG_ID", "")
 

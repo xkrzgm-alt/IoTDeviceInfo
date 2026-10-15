@@ -1,10 +1,44 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Tuple
 
 import requests
 
 from config import DEVICE_INFO_LOGIN_URL, DEVICE_INFO_USER, DEVICE_INFO_PWD, JC_MODULE_LOG_URL
+from temperature_client import DashTemperatureClient
+
+
+_TELEMETRY_ONLINE_WINDOW = timedelta(minutes=15)
+
+
+def _parse_api_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        # Dash currently returns local server timestamps without an offset. Keep
+        # those comparable with datetime.now(); use UTC for offset-aware values.
+        return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed
+    except ValueError:
+        return None
+
+
+def _is_recent_telemetry(value: Any, now: datetime | None = None) -> bool:
+    reported_at = _parse_api_time(value)
+    if reported_at is None:
+        return False
+    if reported_at.tzinfo:
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        else:
+            current = current.astimezone(timezone.utc)
+    else:
+        current = now or datetime.now()
+        if current.tzinfo is not None:
+            current = current.replace(tzinfo=None)
+    age = current - reported_at
+    return timedelta(0) <= age <= _TELEMETRY_ONLINE_WINDOW
 
 
 class JCModuleClient:
@@ -48,7 +82,11 @@ class JCModuleClient:
                 logging.info("JC module client — login successful, obtained Octopus-Token")
                 self._token = token
                 return token
-            logging.error("JC module client — login succeeded but no Token obtained")
+            logging.error(
+                "JC module client — login rejected (code=%s, message=%s)",
+                resp.json().get("code"),
+                resp.json().get("msg") or resp.json().get("message") or "no token",
+            )
             return None
         except Exception as e:
             logging.error(f"JC module client — login failed: {e}")
@@ -104,6 +142,26 @@ class JCModuleClient:
             logging.error(f"JC module — network status query failed: {e}")
             return {}
 
+    def _telemetry_fallback(self, machine_code: str) -> Dict[str, Any]:
+        """Use recent device telemetry as connectivity evidence.
+
+        This fallback does not invent modem metrics. It only prevents an IoT
+        authentication or network-log failure from being reported as Offline.
+        """
+        try:
+            telemetry = DashTemperatureClient().get_temperature(machine_code)
+            current = (telemetry or {}).get("current_temperature") or {}
+            updated_at = current.get("updatedAt") or current.get("occurredAt")
+            if _is_recent_telemetry(updated_at):
+                logging.info(
+                    "JC module — recent Dash telemetry confirms device connectivity for %s",
+                    machine_code,
+                )
+                return {"online": True, "updated_at": updated_at}
+        except Exception as e:
+            logging.warning("JC module — telemetry fallback failed: %s", e)
+        return {"online": False, "updated_at": None}
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -120,23 +178,37 @@ class JCModuleClient:
         record = self._query_network_status(machine_code)
 
         if not record:
+            telemetry = self._telemetry_fallback(machine_code)
             return {
                 "Router SN": router_sn,
-                "Online Status": "[Offline]",
+                "Online Status": (
+                    "[Online (recent device telemetry)]" if telemetry["online"] else "[Unknown]"
+                ),
+                "Status Source": (
+                    "Dash temperature telemetry"
+                    if telemetry["online"]
+                    else "IoT module status unavailable"
+                ),
                 "Device Model": "4G Module (Built-in)",
                 "IMEI": "Not Found",
                 "ICCID": "Not Found",
                 "Firmware Version": "-",
-                "Last Active Time": "-",
+                "Last Active Time": telemetry["updated_at"] or "-",
             }, {}
 
         # --- Build router_info dict (same keys as InHand/Hongdian clients) ---
         status_val = record.get("status")
-        status_name = record.get("statusName", "")
-        if status_val == 1 or status_name in ("正常", "Normal", "Online", "Connected", "在线"):
+        status_name = str(record.get("statusName", "")).strip()
+        if status_val in (1, "1", True) or status_name in (
+            "正常", "Normal", "Online", "Connected", "在线"
+        ):
             online_status = "[Online]"
-        else:
+        elif status_val in (0, "0", False) or status_name in (
+            "异常", "Offline", "Disconnected", "离线"
+        ):
             online_status = "[Offline]"
+        else:
+            online_status = "[Unknown]"
 
         network_type = record.get("networkType", "")
         # networkType is a numeric string like "13" (LTE); keep as-is

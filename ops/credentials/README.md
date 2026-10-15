@@ -1,0 +1,26 @@
+# Aliyun credential operations
+
+**The 2026-10-15 initial migration is complete; subsequent runs change production only when an operator invokes `sync_aliyun.py`.** Code releases and secret rotation are separate. Never put a long-lived secret in the Mini Program or in Git. `secrets.sops.json`, age private keys and plaintext are ignored by the IoTdeviceInfo repository; store encrypted inventory backups in a separately controlled private ops repository, not in this public project.
+
+## First-time setup
+
+Run the commands below from the workspace root (`ClaudeCode_Prj/`).
+
+1. Install SOPS + age on the operator's workstation; keep the age identity outside this workspace, backed up securely with restricted access. Set `SOPS_AGE_KEY_FILE` and `SOPS_AGE_RECIPIENTS` in the operator's shell.
+2. Copy `secrets.sops.example.json` to `secrets.sops.json` locally; fill the **key names** from `schema.json` with current values, taking dashboard login/WPS values from the server's current dashboard dotenv if unavailable locally. Do not paste values into chat, shell arguments, tickets, or logs. Generate a new random `BACKEND_SERVICE_TOKEN` (same key in the common group; not a browser secret). Avoid plaintext copies on disk: use `sops edit secrets.sops.json` once the file is encrypted (`sops encrypt --in-place secrets.sops.json`); do not commit before verifying `sops` metadata exists.
+3. Existing tracked `IoTdeviceInfo/8959Test.py` contained hardcoded provider credentials: **rotate InHand, Hongdian and Hologram secrets and audit Git history** before considering the migration complete. An update to the current file is not a history purge.
+4. Use `python IoTdeviceInfo/ops/credentials/sync_aliyun.py --check` to validate locally without printing values. `python IoTdeviceInfo/ops/credentials/audit.py` only reports key counts and duplication.
+5. After explicit production authorization, run `python IoTdeviceInfo/ops/credentials/sync_aliyun.py`. Confirm `SYNC` interactively. It ships a validated encrypted inventory over SSH stdin, installs atomic root-owned `0600` fragments in `/etc/vendera`, creates unit drop-ins for `hwprogm.service`, `hwprogm-monitor.service` and `iot-backend.service`, restarts only affected long-running services and verifies `/login` and `/health`. The monitor timer loads the new environment at its next invocation. Root-only backups are retained at `/etc/vendera/backups/<timestamp>/`; failed checks restore the prior files and units.
+6. Confirm real authenticated dashboard, Mini Program, WPS and device/router/SIM/POS queries, and monitor execution. A healthy `/health` endpoint alone does **not** prove credentials are valid. Verify `systemctl cat` and `stat` for file modes without exposing values. Fix the preexisting IoT dotenv permission immediately: `chmod 600 /root/IoTdeviceInfo/.env` (only with deployment approval). Remove legacy remote dotenv files only after the new services are verified; do not delete local developer dotenv files automatically.
+
+### Rotation
+
+Run `sops edit IoTdeviceInfo/ops/credentials/secrets.sops.json` to change a value **once** in the owner group (`common` is shared by both services). Validate and synchronize as above. Roll back by restoring the encrypted previous inventory and re-running sync, or restore the root-only `/etc/vendera/backups` snapshot and restart affected systemd services. Never rotate the common Device Info account in just one project dotenv. Use a maintenance window for upstream credential rotations; health checks do not validate external providers.
+
+### Local development
+
+Python configurations load workspace `.env.vendera` then project `.env` only for keys not already in the process environment. Put shared Device Info and SmartCabinet credentials in `.env.vendera`; keep dashboard login/WPS in `HWProgM/dashboard/.env` and InHand/Hologram/Hongdian in `IoTdeviceInfo/.env`. Move stale duplicates manually after local testing. Azure AD credentials are intentionally out of scope. `IoTdeviceInfo/.env.deploy` is a legacy Docker-only file; do not update it for the current host-based service. Never copy local dotenv files in code deployment.
+
+### Security follow-up
+
+The backend validates Mini Program `Octopus-Token` against the IoT upstream `/iot/machine/page` API on each query; HWProgM uses a server-only `X-Service-Token` over loopback. Restrict the upstream endpoint to the minimum scope as provider support permits. Add Nginx rate limiting / request-size limits using `nginx-rate-limit.example.conf` after testing and run Gitleaks over current trees **and histories**. `project.private.config.json` is currently tracked and user-modified; `.gitignore` prevents future additions but does not untrack the existing file. Untrack only after coordinating with the team and preserving the user's changes. The deployed IoT service has an additional `60-loopback-only.conf` systemd drop-in: keep port 8080 bound to `127.0.0.1`. The active Nginx vhost `/etc/nginx/sites-enabled/hwprogm.bak.20260731_165608` has query-only IP rate and 16k body-size limits; its backup is in `/etc/nginx/config-backups/`. Mini Program CLI upload creates a developer build, **not** a public release: release version 1.0.1 through WeChat administration before expecting existing users to query the protected endpoint.

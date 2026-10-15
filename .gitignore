@@ -1,6 +1,9 @@
 # Credentials (never commit)
 .env
 .env.deploy
+/ops/credentials/secrets.sops.json
+/ops/credentials/*.agekey
+/ops/credentials/*.plaintext*
 
 # Python
 __pycache__/

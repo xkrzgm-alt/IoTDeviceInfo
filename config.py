@@ -3,7 +3,7 @@ import sys
 import logging
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 # --- Resolve paths (works in both dev and PyInstaller-frozen builds) ---
 if getattr(sys, "frozen", False):
@@ -13,16 +13,14 @@ if getattr(sys, "frozen", False):
 else:
     _PROJECT_ROOT = Path(__file__).resolve().parent
 
-# --- Cascade loading: shared (low priority) → project (high priority) ---
+# Local cascade: common → project, with external (systemd) environment highest.
 _workspace = _PROJECT_ROOT.parent
-for _f in [".env.azure", ".env.vendera"]:
-    _p = _workspace / _f
+_external_keys = set(os.environ)
+for _p in (_workspace / ".env.vendera", _PROJECT_ROOT / ".env"):
     if _p.exists():
-        load_dotenv(_p)
-
-_project_env = _PROJECT_ROOT / ".env"
-if _project_env.exists():
-    load_dotenv(_project_env, override=True)
+        for _key, _value in dotenv_values(_p).items():
+            if _key not in _external_keys and _value is not None:
+                os.environ[_key] = _value
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 
